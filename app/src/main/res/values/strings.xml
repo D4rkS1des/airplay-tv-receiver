@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">AirPlay Receiver</string>
+
+    <!-- Appended to the device's own name to build what shows up in the iPhone mirroring list -->
+    <string name="airplay_name_suffix">AirPlay</string>
+    <!-- Used only when the device does not expose a name of its own -->
+    <string name="airplay_fallback_name">Android TV</string>
+
+    <string name="btn_start">Start Service</string>
+    <string name="btn_stop">Stop Service</string>
+    <string name="status_idle">Status: Idle</string>
+    <string name="status_running">Status: Running</string>
+    <string name="status_connected">Status: Connected</string>
+
+    <!-- Signature line on the idle overlay -->
+    <string name="credit">Open Source AirPlay Receiver</string>
+
+    <!-- Shown in the system notification settings for this app -->
+    <string name="notification_channel_name">AirPlay Service</string>
+    <string name="notification_channel_desc">Keeps AirPlay receiver running</string>
+</resources>

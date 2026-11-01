@@ -1,0 +1,35 @@
+*.log
+*.zip
+*.tar.gz
+*.iml
+*.jar
+target
+build
+logs
+classes
+out
+bin
+.*
+.bin
+.tracker
+!.gitkeep
+!.gitignore
+!gradle/wrapper/gradle-wrapper.jar
+node_modules
+package-lock.json
+!.gitlab-ci.yml
+generated
+generated_tests
+*.bin
+*.tracker
+
+# Machine-specific SDK path
+local.properties
+
+# Signing material: never commit the keystore or its passwords
+keystore.properties
+*.jks
+*.keystore
+
+# Build artifacts
+*.apk

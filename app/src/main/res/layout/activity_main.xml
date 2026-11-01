@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#000000">
+
+    <!-- Clean pitch-black backdrop (no picture wall showing around video) -->
+    <ImageView
+        android:id="@+id/wall"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:scaleType="centerCrop"
+        android:src="#000000"
+        android:contentDescription="@null" />
+
+    <SurfaceView
+        android:id="@+id/surface_view"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:layout_gravity="center" />
+
+    <!--
+      Moulding round the picture. MainActivity sizes it to the letterboxed video plus the width of
+      the frame on each side; the middle of the drawable is transparent, so the video is untouched.
+    -->
+    <View
+        android:id="@+id/mirror_frame"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:background="@drawable/mirror_frame"
+        android:visibility="gone" />
+
+    <!--
+      Idle wallpaper, the same picture as the wall above. It sits over the SurfaceView on purpose:
+      the surface keeps the last frame of the session that just ended, and covering it is what
+      hides that. MainActivity takes it away once frames arrive, which uncovers the surface and
+      leaves the copy underneath showing round the edges.
+    -->
+    <ImageView
+        android:id="@+id/background"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:scaleType="centerCrop"
+        android:src="@drawable/bg_startup"
+        android:contentDescription="@null" />
+
+    <LinearLayout
+        android:id="@+id/controls"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:orientation="vertical"
+        android:padding="16dp"
+        android:background="#80000000">
+
+        <TextView
+            android:id="@+id/status_text"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/status_idle"
+            android:textColor="#FFFFFF"
+            android:textSize="14sp"
+            android:gravity="center" />
+
+        <TextView
+            android:id="@+id/ip_text"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="#AAAAAA"
+            android:textSize="12sp"
+            android:gravity="center"
+            android:layout_marginTop="4dp" />
+
+        <Button
+            android:id="@+id/btn_toggle"
+            android:layout_width="200dp"
+            android:layout_height="48dp"
+            android:layout_gravity="center_horizontal"
+            android:layout_marginTop="8dp"
+            android:text="@string/btn_start"
+            android:textAllCaps="false" />
+
+        <TextView
+            android:id="@+id/credit_text"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/credit"
+            android:textColor="#88FFFFFF"
+            android:textSize="11sp"
+            android:gravity="center"
+            android:layout_marginTop="10dp" />
+
+    </LinearLayout>
+
+</FrameLayout>
