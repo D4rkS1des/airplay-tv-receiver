@@ -75,6 +75,47 @@ public class VideoHolder {
     /** Input buffers the codec has handed out and that have nothing to carry yet. */
     private static final ArrayDeque<Integer> sFreeInputs = new ArrayDeque<>();
 
+    /**
+     * Frames that arrived while there was no surface yet, i.e. while the service was still
+     * bringing the UI up for a session that began in the background. Kept from the most recent
+     * IDR on, so the decoder can start from a clean picture instead of waiting for the next
+     * keyframe (iOS rarely sends one unprompted). Handed to the decoder as soon as it starts.
+     */
+    private static final ArrayDeque<Frame> sPreroll = new ArrayDeque<>();
+    /** About two seconds at 60 fps; past that the backlog is stale and is dropped. */
+    private static final int MAX_PREROLL_FRAMES = 120;
+    private static boolean sPrerollHasIdr;
+
+    /** True if the Annex B access unit holds an IDR slice (NAL type 5). */
+    private static boolean containsIdr(byte[] au) {
+        for (int i = 0; i + 4 < au.length; i++) {
+            if (au[i] == 0 && au[i + 1] == 0 && au[i + 2] == 0 && au[i + 3] == 1) {
+                if ((au[i + 4] & 0x1F) == 5) return true;
+                i += 3;
+            }
+        }
+        return false;
+    }
+
+    private static void bufferPrerollLocked(byte[] video, long senderUs) {
+        if (containsIdr(video)) {
+            sPreroll.clear();
+            sPrerollHasIdr = true;
+        }
+        if (!sPrerollHasIdr) return; // Nothing decodable until a keyframe shows up
+        if (sPreroll.size() >= MAX_PREROLL_FRAMES) {
+            sPreroll.clear();
+            sPrerollHasIdr = false;
+            return;
+        }
+        sPreroll.addLast(new Frame(video, senderUs));
+    }
+
+    private static void clearPrerollLocked() {
+        sPreroll.clear();
+        sPrerollHasIdr = false;
+    }
+
     /** True while a delayed {@link #FEED} is already queued, so only one is ever outstanding. */
     private static boolean sFeedScheduled;
 
@@ -128,6 +169,7 @@ public class VideoHolder {
     public static void notifySessionEnded() {
         AvSync.reset();
         synchronized (LOCK) {
+            clearPrerollLocked();
             if (sHeaderWidth == 0 && sHeaderHeight == 0 && sVideoWidth == 0 && sVideoHeight == 0) {
                 return;
             }
@@ -303,6 +345,12 @@ public class VideoHolder {
                 // hardware decoders that drive a TV video plane only pick them up from the
                 // bitstream itself.
                 sPending.addLast(new Frame(spsPps, 0));
+                if (sPrerollHasIdr && !sPreroll.isEmpty()) {
+                    Log.i(TAG, "Feeding " + sPreroll.size() + " frames buffered before the surface existed");
+                    // Shown straight away rather than lip-synced: they are already late
+                    for (Frame f : sPreroll) sPending.addLast(new Frame(f.data, 0));
+                }
+                clearPrerollLocked();
                 feedCodecLocked();
             }
             Log.i(TAG, "Decoder started at " + width + "x" + height);
@@ -380,7 +428,11 @@ public class VideoHolder {
             if (sNeedsRestart) {
                 spsPps = sSpsPps;
             } else if (!sConfigured) {
-                if (sFrameCount == 0) {
+                // No decoder yet (UI still coming up for a background session, or the surface
+                // exists but the codec is being built): hold on to the stream so the reference
+                // chain is intact once decoding starts
+                bufferPrerollLocked(video, senderUs);
+                if (sFrameCount == 0 && sSurface != null) {
                     Log.w(TAG, "onVideoData: decoder not ready, sDecoder=" + (sDecoder != null)
                             + " sConfigured=" + sConfigured);
                 }

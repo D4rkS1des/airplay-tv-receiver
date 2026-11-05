@@ -7,9 +7,15 @@ import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
+import android.net.ConnectivityManager;
+import android.net.LinkAddress;
+import android.net.LinkProperties;
+import android.net.Network;
 import android.net.wifi.WifiManager;
 import android.os.Build;
+import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
 import android.os.PowerManager;
 import android.provider.Settings;
 import android.text.TextUtils;
@@ -17,7 +23,9 @@ import android.util.Log;
 
 import com.airplay.android.server.AirPlayServer;
 import com.github.serezhka.jap2lib.AirPlay;
+import com.github.serezhka.jap2lib.AirPlayBonjour;
 
+import java.net.Inet4Address;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -26,13 +34,14 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * Hosts the AirPlay receiver for as long as the app is open.
+ * Hosts the AirPlay receiver in the background, from boot onwards.
  *
- * <p>The receiver only advertises itself while the UI is around, since mirroring needs the
- * Activity's Surface to decode into. Leaving the app therefore takes the device off the
- * AirPlay list. Running as a foreground service is still worthwhile: it keeps the multicast
- * lock (mDNS), the Wi-Fi lock (power save would otherwise stall the streams) and the network
- * threads at foreground priority while a session is live.
+ * <p>The receiver stays on the AirPlay list whether or not the app is on screen. Mirroring
+ * still needs the Activity's Surface to decode into, so when a sender starts a session while
+ * the UI is not visible, the service brings {@link MainActivity} up; frames that arrive before
+ * the surface exists are held by {@link VideoHolder} from the last keyframe on. Running as a
+ * foreground service keeps the multicast lock (mDNS), the Wi-Fi lock (power save would
+ * otherwise stall the streams) and the network threads at foreground priority.
  */
 public class AirPlayService extends Service {
 
@@ -53,10 +62,41 @@ public class AirPlayService extends Service {
     private WifiManager.WifiLock wifiLock;
     private PowerManager.WakeLock wakeLock;
 
+    /** Starts (or re-asserts) the receiver from any context: activity, boot receiver, etc. */
+    public static void start(Context context) {
+        Intent intent = new Intent(context, AirPlayService.class);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            context.startForegroundService(intent);
+        } else {
+            context.startService(intent);
+        }
+    }
+
+    private static volatile Context sAppContext;
+
     @Override
     public void onCreate() {
         super.onCreate();
+        sAppContext = getApplicationContext();
         createNotificationChannel();
+    }
+
+    /**
+     * A sender has begun mirroring: make sure the screen that decodes it is in front. Called on a
+     * network thread for every SPS/PPS, so it is a no-op while the UI is already visible.
+     */
+    static void bringUiForward() {
+        Context context = sAppContext;
+        if (context == null || MainActivity.isVisible()) return;
+        try {
+            Intent intent = new Intent(context, MainActivity.class)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+                    .putExtra(MainActivity.EXTRA_AUTO_LAUNCHED, true);
+            context.startActivity(intent);
+            Log.i(TAG, "Mirroring started in the background, bringing the UI forward");
+        } catch (Exception e) {
+            Log.e(TAG, "Could not bring the mirroring screen forward", e);
+        }
     }
 
     @Override
@@ -65,9 +105,12 @@ public class AirPlayService extends Service {
         String deviceId = resolveDeviceId(this);
         startForeground(NOTIFICATION_ID, buildNotification(serverName + " · starting"));
 
+        sWanted = true;
         acquireLocks();
+        watchNetwork(serverName, deviceId);
         LIFECYCLE.submit(() -> startServer(serverName, deviceId));
-        return START_NOT_STICKY;
+        // Sticky: if the system ever kills the process for memory, it is brought back
+        return START_STICKY;
     }
 
     /**
@@ -124,6 +167,8 @@ public class AirPlayService extends Service {
             Log.i(TAG, "Server already running, ignoring duplicate start");
             return;
         }
+        if (!sWanted) return;
+        AirPlayServer server = null;
         try {
             // Build the Ed25519 identity keypair off to one side while mDNS comes up and the
             // sender is still finding us, so the ~0.5s it costs the first time is not spent
@@ -131,15 +176,93 @@ public class AirPlayService extends Service {
             // this finishes simply waits on the same one-time build rather than starting a second.
             new Thread(AirPlay::prewarmCrypto, "airplay-crypto-prewarm").start();
 
-            AirPlayServer server = new AirPlayServer(serverName, deviceId, 7000, 5000, new VideoCallback());
+            Inet4Address address = defaultNetworkAddress();
+            if (address == null) {
+                throw new IllegalStateException("No default network with an IPv4 address yet");
+            }
+            AirPlayBonjour.setPreferredAddress(address);
+            lastAddress = address.getHostAddress();
+            server = new AirPlayServer(serverName, deviceId, 7000, 5000, new VideoCallback());
             server.start();
             sServer = server;
             Log.i(TAG, "AirPlay server started as '" + serverName + "' (id " + deviceId + ")");
             updateNotification(serverName + " · ready");
         } catch (Exception e) {
-            Log.e(TAG, "Failed to start AirPlay server", e);
-            updateNotification("Failed to start, will retry on next launch");
-            stopSelf();
+            // Typically no IPv4 address yet: at boot Wi-Fi comes up after BOOT_COMPLETED. Keep
+            // retrying while the service is alive instead of giving up until the app is opened.
+            Log.e(TAG, "Failed to start AirPlay server, retrying in " + RETRY_DELAY_MS + "ms", e);
+            // Undo a half start (mDNS registered, RTSP port failed) so the retry starts clean
+            if (server != null) {
+                try { server.stop(); } catch (Exception ignored) { /* best effort */ }
+            }
+            updateNotification(serverName + " · waiting for network");
+            scheduleRetry(serverName, deviceId);
+        }
+    }
+
+    private static final long RETRY_DELAY_MS = 5000;
+    private static final Handler MAIN = new Handler(Looper.getMainLooper());
+    /** True between onStartCommand and onDestroy: the receiver is supposed to be up. */
+    private static volatile boolean sWanted;
+
+    private void scheduleRetry(String serverName, String deviceId) {
+        MAIN.postDelayed(() -> {
+            if (sWanted) LIFECYCLE.submit(() -> startServer(serverName, deviceId));
+        }, RETRY_DELAY_MS);
+    }
+
+    private ConnectivityManager.NetworkCallback networkCallback;
+    /** IPv4 address of the default network last time we looked, to spot real changes. */
+    private volatile String lastAddress;
+
+    /** First IPv4 address on these link properties, or null. */
+    private static Inet4Address ipv4Of(LinkProperties props) {
+        if (props == null) return null;
+        for (LinkAddress la : props.getLinkAddresses()) {
+            if (la.getAddress() instanceof Inet4Address) return (Inet4Address) la.getAddress();
+        }
+        return null;
+    }
+
+    /** IPv4 address of the system's default (active) network: the one the LAN reaches us on. */
+    private Inet4Address defaultNetworkAddress() {
+        ConnectivityManager cm = getSystemService(ConnectivityManager.class);
+        if (cm == null) return null;
+        Network active = cm.getActiveNetwork();
+        return active == null ? null : ipv4Of(cm.getLinkProperties(active));
+    }
+
+    /**
+     * mDNS is bound to one address, so after a Wi-Fi reconnect with a new IP (or a switch
+     * between Ethernet and Wi-Fi) the receiver would keep advertising the old one and vanish from
+     * the AirPlay list. Restart it whenever the default network's IPv4 address changes.
+     */
+    private void watchNetwork(String serverName, String deviceId) {
+        ConnectivityManager cm = getSystemService(ConnectivityManager.class);
+        if (cm == null || networkCallback != null) return;
+        networkCallback = new ConnectivityManager.NetworkCallback() {
+            @Override
+            public void onLinkPropertiesChanged(Network network, LinkProperties props) {
+                Inet4Address ipv4 = ipv4Of(props);
+                if (ipv4 == null) return;
+                String address = ipv4.getHostAddress();
+                String previous = lastAddress;
+                lastAddress = address;
+                if (previous != null && !previous.equals(address)) {
+                    Log.i(TAG, "Network address changed " + previous + " -> " + address
+                            + ", restarting the receiver");
+                    LIFECYCLE.submit(() -> {
+                        stopServer();
+                        if (sWanted) startServer(serverName, deviceId);
+                    });
+                }
+            }
+        };
+        try {
+            cm.registerDefaultNetworkCallback(networkCallback);
+        } catch (Exception e) {
+            Log.w(TAG, "Could not watch the network", e);
+            networkCallback = null;
         }
     }
 
@@ -182,19 +305,16 @@ public class AirPlayService extends Service {
         wakeLock = null;
     }
 
-    /**
-     * The user swiped the app away: stop advertising instead of lingering in the background.
-     */
-    @Override
-    public void onTaskRemoved(Intent rootIntent) {
-        Log.i(TAG, "Task removed, shutting the receiver down");
-        stopSelf();
-        super.onTaskRemoved(rootIntent);
-    }
-
     @Override
     public void onDestroy() {
         super.onDestroy();
+        sWanted = false;
+        MAIN.removeCallbacksAndMessages(null);
+        if (networkCallback != null) {
+            ConnectivityManager cm = getSystemService(ConnectivityManager.class);
+            try { if (cm != null) cm.unregisterNetworkCallback(networkCallback); } catch (Exception e) { /* ignore */ }
+            networkCallback = null;
+        }
         LIFECYCLE.submit(AirPlayService::stopServer);
         releaseLocks();
         Log.i(TAG, "AirPlay service destroyed");
@@ -263,6 +383,7 @@ public class AirPlayService extends Service {
         @Override
         public void onSpsPps(byte[] spsPps) {
             VideoHolder.onSpsPpsData(spsPps);
+            bringUiForward();
         }
     }
 }

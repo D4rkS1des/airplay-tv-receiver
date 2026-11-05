@@ -47,6 +47,15 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
     private boolean userStopped = false;
     private int videoWidth;
     private int videoHeight;
+    /** Set by the service when it opens this screen for an incoming session. */
+    static final String EXTRA_AUTO_LAUNCHED = "auto_launched";
+    /** This screen was opened by a sender connecting, so it closes again when the session ends. */
+    private boolean autoLaunched;
+    private static volatile boolean sVisible;
+
+    static boolean isVisible() {
+        return sVisible;
+    }
     /** Width of one side of the moulding, in pixels. */
     private int frameWidthPx;
 
@@ -93,6 +102,12 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
                 controls.setVisibility(View.VISIBLE);
                 statusText.setText(serverRunning ? getString(R.string.status_running)
                         : getString(R.string.status_idle));
+                if (autoLaunched) {
+                    // Opened for this session only: hand the screen back to whatever was on it.
+                    // The receiver keeps running in the background service.
+                    autoLaunched = false;
+                    finish();
+                }
                 return;
             }
             boolean firstFrame = videoWidth == 0;
@@ -117,16 +132,28 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
             }
         }
 
+        autoLaunched = getIntent().getBooleanExtra(EXTRA_AUTO_LAUNCHED, false);
         displayIpAddress();
     }
 
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        if (intent.getBooleanExtra(EXTRA_AUTO_LAUNCHED, false)) {
+            autoLaunched = true;
+        }
+    }
+
     /**
-     * The receiver is tied to the UI being on screen: mirroring can only be decoded into this
-     * Activity's Surface, so the device advertises itself exactly while the app is visible.
+     * Opening the app (re)asserts the background receiver; it is normally already running from
+     * boot. Mirroring decodes into this Activity's Surface, and the service brings it up by itself
+     * when a sender connects while it is not on screen.
      */
     @Override
     protected void onStart() {
         super.onStart();
+        sVisible = true;
         if (!userStopped) {
             startServer();
         }
@@ -135,9 +162,10 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
     @Override
     protected void onStop() {
         super.onStop();
-        Log.i(TAG, "Activity no longer visible, stopping the receiver");
-        stopServer();
-        userStopped = false;
+        sVisible = false;
+        // The receiver deliberately keeps running: it lives in the background service and will
+        // bring this screen back when the next sender connects.
+        Log.i(TAG, "Activity no longer visible, receiver stays up in the background");
     }
 
     private void displayIpAddress() {
@@ -153,6 +181,9 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
     private String getLocalIpAddress() {
         try {
             for (NetworkInterface intf : Collections.list(NetworkInterface.getNetworkInterfaces())) {
+                // p2p0 is Wi-Fi Direct (Miracast) on its own subnet, not the LAN address
+                String name = intf.getName();
+                if (name.startsWith("p2p") || name.startsWith("dummy")) continue;
                 for (java.net.InetAddress addr : Collections.list(intf.getInetAddresses())) {
                     if (!addr.isLoopbackAddress() && addr instanceof Inet4Address) {
                         return addr.getHostAddress();
@@ -259,12 +290,7 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
     }
 
     private void startServer() {
-        Intent intent = new Intent(this, AirPlayService.class);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(intent);
-        } else {
-            startService(intent);
-        }
+        AirPlayService.start(this);
 
         serverRunning = true;
         btnToggle.setText(R.string.btn_stop);

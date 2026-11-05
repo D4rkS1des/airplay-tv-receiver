@@ -70,7 +70,8 @@ class RTSP {
                             shk = (byte[]) ((com.dd.plist.NSObject) shkObj).toJavaObject();
                         }
                         if (shk != null) {
-                            log.info("Audio shk: " + Utils.bytesToHex(shk));
+                            // Never log the key itself: logcat is readable by debugging tools
+                            log.info("Audio shk received ({} bytes)", shk.length);
                         }
                     } else {
                         log.warn("No shk in audio stream plist!");
@@ -89,12 +90,12 @@ class RTSP {
 
         if (request.containsKey("ekey")) {
             encryptedAESKey = (byte[]) request.get("ekey").toJavaObject();
-            log.info("Encrypted AES key: " + Utils.bytesToHex(encryptedAESKey));
+            log.info("Encrypted AES key received");
         }
 
         if (request.containsKey("eiv")) {
             eiv = (byte[]) request.get("eiv").toJavaObject();
-            log.info("AES eiv: " + Utils.bytesToHex(eiv));
+            log.info("AES eiv received");
         }
     }
 

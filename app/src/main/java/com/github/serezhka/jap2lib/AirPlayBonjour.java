@@ -76,10 +76,27 @@ public class AirPlayBonjour {
         }
     }
 
-    /** The address senders can actually reach us on: first non-loopback IPv4 of an up interface. */
+    /**
+     * Address of the platform's default network, set by the Android service before {@link #start}.
+     * Interface order alone is not enough: TVs with Wi-Fi Direct (Miracast) keep a p2p0 interface
+     * up on its own subnet, and advertising on that makes the receiver invisible on the LAN.
+     */
+    private static volatile InetAddress preferredAddress;
+
+    public static void setPreferredAddress(InetAddress address) {
+        preferredAddress = address;
+    }
+
+    /** The address senders can actually reach us on. */
     private static InetAddress primaryAddress() throws Exception {
+        InetAddress preferred = preferredAddress;
+        if (preferred != null) return preferred;
+        // Fallback: first IPv4 of an up interface, skipping Wi-Fi Direct and virtual ones
         for (NetworkInterface intf : Collections.list(NetworkInterface.getNetworkInterfaces())) {
-            if (!intf.isUp() || intf.isLoopback()) continue;
+            if (!intf.isUp() || intf.isLoopback() || intf.isVirtual()) continue;
+            String name = intf.getName();
+            if (name.startsWith("p2p") || name.startsWith("dummy") || name.startsWith("tun")
+                    || name.startsWith("rmnet")) continue;
             for (InetAddress addr : Collections.list(intf.getInetAddresses())) {
                 if (addr instanceof Inet4Address) return addr;
             }

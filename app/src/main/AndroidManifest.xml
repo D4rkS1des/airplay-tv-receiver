@@ -9,6 +9,13 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Start the receiver when the TV boots, so it is on the AirPlay list without opening the app -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- Lets the background service bring the mirroring screen up when a sender connects
+         (Android 10+ blocks background activity starts otherwise). Granted via
+         `adb shell appops set com.airplay.android SYSTEM_ALERT_WINDOW allow` on TVs that have no
+         settings screen for it. -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
     <!-- TVs have no touchscreen and often no camera/telephony: keep every hardware
          requirement optional so the APK stays installable on TV and phone alike -->
@@ -49,6 +56,15 @@
             android:name=".AirPlayService"
             android:exported="false"
             android:foregroundServiceType="mediaPlayback" />
+
+        <receiver
+            android:name=".BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
 
     </application>
 </manifest>
