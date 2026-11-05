@@ -1,5 +1,27 @@
 # AirPlay Receiver for Android TV / Google TV
 
+> ### 🍴 About this fork
+> Fork of [alexqem/airplay-tv-receiver](https://github.com/alexqem/airplay-tv-receiver) (itself based on [GodMingFeng/airplay-android](https://github.com/GodMingFeng/airplay-android) and [serezhka/java-airplay-lib](https://github.com/serezhka/java-airplay-lib)), reworked to run as an always-on background receiver.
+>
+> **Changes**
+> - **Always available.** The receiver runs as a foreground service from boot (`BOOT_COMPLETED`, `MY_PACKAGE_REPLACED`, `START_STICKY`) and no longer stops when the app leaves the screen.
+> - **Auto-open on connect.** When an iPhone/Mac starts mirroring, the player screen comes up by itself and closes again when the session ends.
+> - **No grey start.** Frames from the last keyframe are buffered until the decoder is ready, so a session started in the background shows a picture immediately.
+> - **Network resilience.** Start is retried until Wi-Fi is up after boot; the receiver restarts if the IPv4 address changes.
+> - **Fix: invisible on MediaTek TVs.** mDNS now advertises on the default network's address instead of the first interface (Wi-Fi Direct `p2p0` was picked before).
+> - **Privacy.** FairPlay / pairing keys are no longer written to logcat.
+> - **Security.** Netty bumped 4.1.94 → 4.1.140.
+>
+> **Build** (JDK 17, Android SDK 33): `./gradlew assembleRelease`, or run the checked-in wrapper jar directly: `java -cp gradle/wrapper/gradle-wrapper.jar org.gradle.wrapper.GradleWrapperMain assembleRelease`.
+>
+> **Install & allow background start**
+> ```bash
+> adb install -r app/build/outputs/apk/release/app-release.apk
+> adb shell appops set com.airplay.android SYSTEM_ALERT_WINDOW allow   # lets the service open the player
+> adb shell cmd deviceidle whitelist +com.airplay.android               # optional: exempt from power saving
+> adb shell am start -n com.airplay.android/.MainActivity               # first launch once
+> ```
+
 > **100% Free, Open-Source & Ad-Free AirPlay Mirroring Receiver for Android TV**  
 > *Forked and customized for clean, true borderless full-screen mirroring with pitch-black margins.*
 
